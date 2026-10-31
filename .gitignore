@@ -1,0 +1,87 @@
+Gradle
+
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+Android
+
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+Android Studio / IntelliJ IDEA
+
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+Kotlin
+
+.kotlin/
+
+Java
+
+*.class
+
+Logs
+
+*.log
+logs/
+
+Sistema operativo
+
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+Ficheiros temporários
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+Configurações locais
+
+.env
+.env.*
+!.env.example
+
+Chaves e certificados de assinatura
+
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+
+Credenciais e segredos
+
+secrets.properties
+keystore.properties
+credentials.json
+service-account*.json
+
+Configurações locais do ambiente
+
+local.properties
+
+Relatórios e ficheiros de diagnóstico
+
+crashlytics-build.properties
+replay_pid*
+
+Ficheiros de backup
+
+*.bak
+*.old
+*.orig
