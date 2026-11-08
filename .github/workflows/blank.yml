@@ -1,0 +1,87 @@
+name: Compilar tun2socks (hev) para Android
+
+# Corre à mão: Actions → "Compilar tun2socks (hev) para Android" → Run workflow.
+on:
+  workflow_dispatch:
+
+# Precisa de escrever no repositório para guardar as .so compiladas.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Obter o repositório
+        uses: actions/checkout@v4
+
+      - name: Compilar libhev-socks5-tunnel.so com o NDK do runner
+        run: |
+          set -euo pipefail
+          HEV_VER="2.7.2"
+          ABIS="arm64-v8a armeabi-v7a x86_64 x86"
+
+          # O runner do GitHub já traz o NDK instalado.
+          NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_LATEST_HOME:-}}}"
+          if [ -z "$NDK" ] && [ -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}/ndk" ]; then
+            NDK="$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/* | sort -V | tail -n1)"
+          fi
+          echo "NDK em uso: $NDK"
+          test -x "$NDK/ndk-build"
+
+          # Fonte oficial do hev-socks5-tunnel (com submódulos)
+          mkdir -p build/hev
+          git clone --recursive --depth 1 --branch "$HEV_VER" \
+              https://github.com/heiher/hev-socks5-tunnel build/hev/jni
+
+          # O nome do pacote/classe tem de coincidir com hev.htproxy.TProxyService da app.
+          cd build/hev
+          "$NDK/ndk-build" \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=jni/Android.mk \
+            "APP_ABI=$ABIS" \
+            APP_PLATFORM=android-21 \
+            NDK_LIBS_OUT="$PWD/libs" \
+            NDK_OUT="$PWD/obj" \
+            "APP_CFLAGS=-O3 -DPKGNAME=hev/htproxy -DCLSNAME=TProxyService" \
+            "APP_LDFLAGS=-Wl,--build-id=none -Wl,--hash-style=gnu"
+          cd ../..
+
+          for abi in $ABIS; do
+            mkdir -p "app/src/main/jniLibs/$abi"
+            cp "build/hev/libs/$abi/libhev-socks5-tunnel.so" "app/src/main/jniLibs/$abi/"
+          done
+
+      - name: Verificar
+        run: |
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            f="app/src/main/jniLibs/$abi/libhev-socks5-tunnel.so"
+            if [ ! -s "$f" ]; then echo "FALTA: $f"; exit 1; fi
+            file "$f"
+            # a classe JNI tem de estar registada com o nome certo
+            strings "$f" | grep -q "hev/htproxy/TProxyService" \
+              && echo "  ✓ JNI hev/htproxy/TProxyService" \
+              || { echo "  ✗ nome JNI errado em $abi"; exit 1; }
+          done
+
+      - name: Guardar as bibliotecas no repositório
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f app/src/main/jniLibs/*/libhev-socks5-tunnel.so
+          if git diff --cached --quiet; then
+            echo "Sem alterações para guardar."
+          else
+            git commit -m "Adicionar libhev-socks5-tunnel.so (tun2socks JNI)"
+            git push
+          fi
+
+      - name: Guardar também como ficheiro para descarregar
+        uses: actions/upload-artifact@v4
+        with:
+          name: jni-libs-prontas
+          path: app/src/main/jniLibs/
+          if-no-files-found: error
+          retention-days: 14
