@@ -85,13 +85,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "stable"
+          cache: false
 
       - name: dnstt — compilar o cliente para cada arquitetura
         if: ${{ inputs.dnstt }}
+        continue-on-error: true      # se falhar, o Xray/OpenVPN são guardados na mesma
         run: |
           set -euo pipefail
           J=app/src/main/jniLibs
-          git clone --depth 1 https://www.bamsoftware.com/git/dnstt.git /tmp/dnstt
+          # O servidor do autor é "dumb http": não aceita clone superficial (--depth).
+          git clone https://www.bamsoftware.com/git/dnstt.git /tmp/dnstt
           for abi in $ABIS; do
             case "$abi" in
               arm64-v8a)   goarch=arm64 ;;
@@ -186,6 +189,7 @@ jobs:
 
       # ---------------------------------------------------------------- Final
       - name: Resumo do que ficou no projeto
+        if: ${{ !cancelled() }}
         run: |
           echo "== jniLibs =="
           find app/src/main/jniLibs -type f -name "*.so" -printf "%P  (%s bytes)\n" | sort
@@ -193,6 +197,7 @@ jobs:
           ls -l app/src/main/assets/xray 2>/dev/null || true
 
       - name: Guardar no repositório
+        if: ${{ !cancelled() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -205,6 +210,7 @@ jobs:
           fi
 
       - name: Guardar também como ficheiro para descarregar
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: binarios-nativos
