@@ -13,77 +13,82 @@ permissions:
 
 jobs:
   build:
-    name: Compile HEV JNI
+    name: Fetch Precompiled JNI
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android Licenses
-        run: |
-          # Garante que todas as licenças do SDK/NDK são aceites antes da instalação
-          yes | sdkmanager --licenses || true
-
-      - name: Install Android NDK
-        run: |
-          sdkmanager --install "ndk;26.1.10909125"
-          # Define e exporta as variáveis de ambiente para o ecossistema do executor
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
-          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
-
-      - name: Verify NDK Installation
-        run: |
-          echo "NDK: $ANDROID_NDK_HOME"
-          if [ -f "$ANDROID_NDK_HOME/ndk-build" ]; then
-            "$ANDROID_NDK_HOME/ndk-build" --version
-          else
-            echo "ERROR: ndk-build não encontrado em $ANDROID_NDK_HOME"
-            exit 1
-          fi
-
-      - name: Install system dependencies
+      - name: Install system tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl unzip file
+          sudo apt-get install -y curl unzip file
 
-      - name: Compile HEV JNI & Setup Dependencies
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
+      - name: Download Official Precompiled Binaries
         run: |
-          # Atribui permissão de execução aos scripts e roda o centralizador de dependências
-          chmod +x script/setup-deps.sh
-          chmod +x script/build-hev-jni.sh
-          bash script/setup-deps.sh 1.8.24
+          # Define as versões estáveis idênticas às dos scripts
+          HEV_VER="2.7.2"
+          XRAY_VER="1.8.24"
+          
+          # Mapeia as ABIs necessárias para o ecossistema Android da app
+          ABIS=(arm64-v8a armeabi-v7a x86_64 x86)
+          
+          for abi in "${ABIS[@]}"; do
+            echo "▶ A processar a arquitetura: $abi"
+            TARGET_DIR="app/src/main/jniLibs/$abi"
+            mkdir -p "$TARGET_DIR"
+            
+            # 1. Obtém a biblioteca JNI estável do tun2socks (hev) correspondente à ABI
+            # Evita compilar do zero para não derrubar a máquina virtual do GitHub
+            case "$abi" in
+              arm64-v8a)   HEV_URL="https://github.com" ;;
+              armeabi-v7a) HEV_URL="https://github.com" ;;
+              x86_64)      HEV_URL="https://github.com" ;;
+              x86)         HEV_URL="https://github.com" ;;
+            esac
+            
+            echo "  • A descarregar libhev-socks5-tunnel.so..."
+            curl -fsSL -o "$TARGET_DIR/libhev-socks5-tunnel.so" "$HEV_URL"
+            
+            # 2. Obtém a biblioteca nativa do Xray correspondente à ABI
+            case "$abi" in
+              arm64-v8a)   XRAY_ASSET="Xray-android-arm64-v8a.zip" ;;
+              armeabi-v7a) XRAY_ASSET="Xray-linux-arm32-v7a.zip" ;;
+              x86_64)      XRAY_ASSET="Xray-linux-64.zip" ;;
+              x86)         XRAY_ASSET="Xray-linux-32.zip" ;;
+            esac
+            
+            echo "  • A descarregar libxray.so..."
+            XRAY_URL="https://github.com"
+            curl -fsSL -o "xray-$abi.zip" "$XRAY_URL"
+            
+            # Extrai o binário e renomeia como módulo de biblioteca (.so) para o Android aceitar
+            unzip -qo "xray-$abi.zip" -d "xray_ext_$abi"
+            cp "xray_ext_$abi/xray" "$TARGET_DIR/libxray.so"
+            
+            # Limpa ficheiros temporários da arquitetura
+            rm -rf "xray-$abi.zip" "xray_ext_$abi"
+          done
 
-      - name: Verify generated libraries
+      - name: Verify downloaded libraries
         run: |
           for abi in arm64-v8a armeabi-v7a x86_64 x86; do
-            LIB="app/src/main/jniLibs/$abi/libhev-socks5-tunnel.so"
-
-            if [ ! -s "$LIB" ]; then
-              echo "ERROR: Missing $LIB"
-              exit 1
-            fi
-
-            echo "SUCCESS: $LIB"
-            file "$LIB"
+            for lib in libhev-socks5-tunnel.so libxray.so; do
+              PATH_LIB="app/src/main/jniLibs/$abi/$lib"
+              if [ ! -s "$PATH_LIB" ]; then
+                echo "ERROR: Ficheiro crítico ausente em: $PATH_LIB"
+                exit 1
+              fi
+              echo "SUCCESS: $PATH_LIB"
+              file "$PATH_LIB"
+            done
           done
 
       - name: Upload compiled libraries
         uses: actions/upload-artifact@v4
         with:
-          name: hev-jni-android
+          name: jni-libs-prontas
           path: app/src/main/jniLibs/
           if-no-files-found: error
           retention-days: 14
