@@ -1,0 +1,215 @@
+name: Gerar binários nativos (Xray, dnstt, OpenVPN)
+
+# Corre à mão: Actions → "Gerar binários nativos…" → Run workflow.
+# Escolhe o que gerar. Ficheiros que já existem no repositório são ignorados
+# (a não ser que marques "forcar"), para nunca estragar o que já funciona.
+on:
+  workflow_dispatch:
+    inputs:
+      xray:
+        description: "Xray (libxray.so + geoip.dat/geosite.dat)"
+        type: boolean
+        default: true
+      dnstt:
+        description: "dnstt (libdnstt.so) — DNS Tunnel"
+        type: boolean
+        default: true
+      openvpn:
+        description: "OpenVPN (libovpnexec.so + libopenvpn.so) — demora 20-40 min"
+        type: boolean
+        default: false
+      xray_versao:
+        description: "Versão do Xray"
+        type: string
+        default: "1.8.24"
+      ics_ref:
+        description: "Versão (tag/branch) do ics-openvpn"
+        type: string
+        default: "master"
+      forcar:
+        description: "Refazer mesmo que os ficheiros já existam"
+        type: boolean
+        default: false
+
+# Precisa de escrever no repositório para guardar os binários gerados.
+permissions:
+  contents: write
+
+jobs:
+  gerar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      ABIS: "arm64-v8a armeabi-v7a x86_64 x86"
+      FORCAR: ${{ inputs.forcar }}
+
+    steps:
+      - name: Obter o repositório
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------ Xray
+      - name: Xray — descarregar os binários oficiais
+        if: ${{ inputs.xray }}
+        env:
+          XRAY_VER: ${{ inputs.xray_versao }}
+        run: |
+          set -euo pipefail
+          J=app/src/main/jniLibs
+          A=app/src/main/assets/xray
+          mkdir -p "$A"
+          for abi in $ABIS; do
+            case "$abi" in
+              arm64-v8a)   asset="Xray-android-arm64-v8a.zip" ;;
+              armeabi-v7a) asset="Xray-linux-arm32-v7a.zip" ;;
+              x86_64)      asset="Xray-linux-64.zip" ;;
+              x86)         asset="Xray-linux-32.zip" ;;
+            esac
+            mkdir -p "$J/$abi"
+            if [ -s "$J/$abi/libxray.so" ] && [ -s "$A/geoip.dat" ] && [ -s "$A/geosite.dat" ] && [ "$FORCAR" != "true" ]; then
+              echo "• $abi — libxray.so já existe, ignorado"; continue
+            fi
+            echo "▶ $abi ← $asset (v$XRAY_VER)"
+            curl -fsSL -o "/tmp/$asset" \
+              "https://github.com/XTLS/Xray-core/releases/download/v$XRAY_VER/$asset"
+            rm -rf "/tmp/x-$abi"; mkdir -p "/tmp/x-$abi"
+            unzip -qo "/tmp/$asset" -d "/tmp/x-$abi"
+            cp "/tmp/x-$abi/xray" "$J/$abi/libxray.so"
+            chmod 755 "$J/$abi/libxray.so"
+            [ -s "$A/geoip.dat" ]   && [ "$FORCAR" != "true" ] || cp "/tmp/x-$abi/geoip.dat"   "$A/geoip.dat"
+            [ -s "$A/geosite.dat" ] && [ "$FORCAR" != "true" ] || cp "/tmp/x-$abi/geosite.dat" "$A/geosite.dat"
+          done
+
+      # ----------------------------------------------------------------- dnstt
+      - name: dnstt — instalar o Go
+        if: ${{ inputs.dnstt }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: dnstt — compilar o cliente para cada arquitetura
+        if: ${{ inputs.dnstt }}
+        run: |
+          set -euo pipefail
+          J=app/src/main/jniLibs
+          git clone --depth 1 https://www.bamsoftware.com/git/dnstt.git /tmp/dnstt
+          for abi in $ABIS; do
+            case "$abi" in
+              arm64-v8a)   goarch=arm64 ;;
+              armeabi-v7a) goarch=arm ;;
+              x86_64)      goarch=amd64 ;;
+              x86)         goarch=386 ;;
+            esac
+            mkdir -p "$J/$abi"
+            if [ -s "$J/$abi/libdnstt.so" ] && [ "$FORCAR" != "true" ]; then
+              echo "• $abi — libdnstt.so já existe, ignorado"; continue
+            fi
+            echo "▶ dnstt-client para $abi (GOARCH=$goarch)"
+            (cd /tmp/dnstt/dnstt-client && \
+              CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" GOARM=7 \
+              go build -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/$J/$abi/libdnstt.so" .)
+            chmod 755 "$J/$abi/libdnstt.so"
+          done
+
+      # --------------------------------------------------------------- OpenVPN
+      # Atenção à licença: o OpenVPN e o ics-openvpn são GPL. Se distribuíres a app
+      # com estes binários (ex.: Play Store), tens de cumprir a GPL.
+      - name: OpenVPN — preparar o ambiente
+        if: ${{ inputs.openvpn }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: OpenVPN — compilar o ics-openvpn e extrair os binários
+        if: ${{ inputs.openvpn }}
+        continue-on-error: true      # se falhar, o resto (Xray/dnstt) é guardado na mesma
+        env:
+          ICS_REF: ${{ inputs.ics_ref }}
+        run: |
+          set -euo pipefail
+          J=app/src/main/jniLibs
+
+          faltam=0
+          for abi in $ABIS; do
+            for l in libovpnexec.so libopenvpn.so; do [ -s "$J/$abi/$l" ] || faltam=1; done
+          done
+          if [ "$faltam" = "0" ] && [ "$FORCAR" != "true" ]; then
+            echo "• libovpnexec.so/libopenvpn.so já existem em todas as ABIs, ignorado"; exit 0
+          fi
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq swig ninja-build
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+
+          # Os submódulos podem vir com URLs ssh: forçar https.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+          git clone --recursive --depth 1 --branch "$ICS_REF" \
+              https://github.com/schwabe/ics-openvpn build/ics
+          cd build/ics
+          chmod +x gradlew
+
+          TASK=assembleUiDebug
+          ./gradlew --no-daemon -q tasks --all 2>/dev/null | grep -q "assembleUiDebug" || TASK=assembleDebug
+          echo "▶ ./gradlew $TASK (o build nativo demora)"
+          ./gradlew --no-daemon "$TASK"
+          cd ../..
+
+          # Procura cada .so por ABI, preferindo a versão já reduzida (stripped).
+          achar() {  # $1=abi $2=lib
+            f=$(find build/ics -type f -name "$2" -path "*/$1/*" -path "*stripped_native_libs*" 2>/dev/null | head -n1)
+            [ -n "$f" ] || f=$(find build/ics -type f -name "$2" -path "*/$1/*" -path "*merged_native_libs*" 2>/dev/null | head -n1)
+            [ -n "$f" ] || f=$(find build/ics -type f -name "$2" -path "*/$1/*" 2>/dev/null | head -n1)
+            echo "$f"
+          }
+          erro=0
+          for abi in $ABIS; do
+            mkdir -p "$J/$abi"
+            for lib in libovpnexec.so libopenvpn.so libopvpnutil.so; do
+              f=$(achar "$abi" "$lib")
+              if [ -n "$f" ]; then
+                cp "$f" "$J/$abi/$lib"; chmod 755 "$J/$abi/$lib"
+                echo "  ✓ $abi/$lib ← $f"
+              elif [ "$lib" = "libopvpnutil.so" ]; then
+                echo "  • $abi/$lib não existe nesta versão (ok)"
+              else
+                echo "  ✗ $abi/$lib NÃO ENCONTRADO"; erro=1
+              fi
+            done
+          done
+          if [ "$erro" = "1" ]; then
+            echo "---- .so encontrados no build (para diagnóstico) ----"
+            find build/ics -type f -name "*.so" | head -80
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------- Final
+      - name: Resumo do que ficou no projeto
+        run: |
+          echo "== jniLibs =="
+          find app/src/main/jniLibs -type f -name "*.so" -printf "%P  (%s bytes)\n" | sort
+          echo "== assets/xray =="
+          ls -l app/src/main/assets/xray 2>/dev/null || true
+
+      - name: Guardar no repositório
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f app/src/main/jniLibs app/src/main/assets/xray 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "Sem alterações para guardar."
+          else
+            git commit -m "Adicionar binários nativos (Xray/dnstt/OpenVPN)"
+            git push
+          fi
+
+      - name: Guardar também como ficheiro para descarregar
+        uses: actions/upload-artifact@v4
+        with:
+          name: binarios-nativos
+          path: |
+            app/src/main/jniLibs/
+            app/src/main/assets/xray/
+          if-no-files-found: warn
+          retention-days: 14
