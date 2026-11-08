@@ -20,20 +20,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Accept Android Licenses
+        run: |
+          # Garante que todas as licenças do SDK/NDK são aceites antes da instalação
+          yes | sdkmanager --licenses || true
 
       - name: Install Android NDK
         run: |
           sdkmanager --install "ndk;26.1.10909125"
-          # Define e exporta a variável de ambiente para os próximos passos
+          # Define e exporta as variáveis de ambiente para o ecossistema do executor
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      - name: Verify NDK
+      - name: Verify NDK Installation
         run: |
           echo "NDK: $ANDROID_NDK_HOME"
-          "$ANDROID_NDK_HOME/ndk-build" --version
+          if [ -f "$ANDROID_NDK_HOME/ndk-build" ]; then
+            "$ANDROID_NDK_HOME/ndk-build" --version
+          else
+            echo "ERROR: ndk-build não encontrado em $ANDROID_NDK_HOME"
+            exit 1
+          fi
 
       - name: Install system dependencies
         run: |
@@ -45,10 +61,10 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
           ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
         run: |
-          # Torna os scripts executáveis e roda o fluxo completo de dependências
+          # Atribui permissão de execução aos scripts e roda o centralizador de dependências
           chmod +x script/setup-deps.sh
           chmod +x script/build-hev-jni.sh
-          bash scripts/setup-deps.sh 1.8.24
+          bash script/setup-deps.sh 1.8.24
 
       - name: Verify generated libraries
         run: |
